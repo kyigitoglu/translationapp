@@ -56,10 +56,23 @@ export default function PanelPage() {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const [wf, setWf] = useState<any>(null);
 
-  // Init Webflow Designer SDK
+  // Init Webflow Designer SDK — retry until available
   useEffect(() => {
-    if (typeof window !== "undefined" && (window as unknown as { webflow?: typeof webflow }).webflow) {
-      setWf((window as unknown as { webflow: typeof webflow }).webflow);
+    const init = () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const sdk = (typeof webflow !== "undefined" ? webflow : null) ?? (window as any).webflow ?? null;
+      if (sdk) {
+        setWf(sdk);
+        return true;
+      }
+      return false;
+    };
+
+    if (!init()) {
+      const interval = setInterval(() => {
+        if (init()) clearInterval(interval);
+      }, 200);
+      return () => clearInterval(interval);
     }
   }, []);
 
@@ -201,10 +214,16 @@ export default function PanelPage() {
           )}
         </div>
 
+        {!wf && (
+          <div className="bg-yellow-900/30 border border-yellow-700/40 rounded px-3 py-2 text-xs text-yellow-400">
+            Webflow Designer SDK yükleniyor…
+          </div>
+        )}
+
         {/* Scan button */}
         <button
           onClick={scanElements}
-          disabled={isWorking}
+          disabled={isWorking || !wf}
           className="bg-[#2a2a2a] hover:bg-[#333] border border-white/10 rounded px-3 py-2 text-sm text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
         >
           Scan Page Elements
