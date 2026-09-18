@@ -2,18 +2,6 @@
 
 import { useEffect, useState, useCallback } from "react";
 
-type Status = "idle" | "scanning" | "translating-one" | "translating-all" | "error";
-
-interface TextNode {
-  id: string;
-  tag: string;
-  text: string;
-  translating?: boolean;
-  translated?: string;
-}
-
-const TARGET_TAGS = ["h1","h2","h3","h4","h5","h6","p","a","span","button","label"];
-
 const LANGUAGES = [
   { label: "Turkish", value: "Turkish" },
   { label: "German", value: "German" },
@@ -27,137 +15,114 @@ const LANGUAGES = [
   { label: "Chinese", value: "Chinese (Simplified)" },
 ];
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type WF = any;
+// Fields to skip (non-translatable)
+const SKIP_FIELDS = new Set(["slug", "_archived", "_draft", "_id", "_cid", "updated-on", "created-on", "published-on", "updated-by", "created-by", "published-by"]);
+
+interface Site { id: string; displayName: string; }
+interface Collection { id: string; displayName: string; }
+interface ItemField { slug: string; label: string; value: string; translated?: string; translating?: boolean; }
+interface Item { id: string; name: string; fields: ItemField[]; expanded: boolean; translating?: boolean; }
+
+type Stage = "auth" | "sites" | "collections" | "items";
 
 export default function PanelPage() {
-  const [wf, setWf] = useState<WF>(null);
-  const [sdkReady, setSdkReady] = useState(false);
-  const [sdkMsg, setSdkMsg] = useState("Connecting to Webflow Designer…");
-
   const [language, setLanguage] = useState("Turkish");
-  const [selected, setSelected] = useState<TextNode | null>(null);
-  const [nodes, setNodes] = useState<TextNode[]>([]);
-  const [status, setStatus] = useState<Status>("idle");
+  const [stage, setStage] = useState<Stage>("auth");
+  const [authed, setAuthed] = useState(false);
   const [error, setError] = useState("");
-  const [scanDone, setScanDone] = useState(false);
 
-  const [debugMsgs, setDebugMsgs] = useState<string[]>([]);
-  const [showDebug, setShowDebug] = useState(false);
+  const [sites, setSites] = useState<Site[]>([]);
+  const [siteId, setSiteId] = useState("");
 
-  const addDebug = (msg: string) => setDebugMsgs((p) => [...p.slice(-19), msg]);
+  const [collections, setCollections] = useState<Collection[]>([]);
+  const [collectionId, setCollectionId] = useState("");
 
-  // Init SDK
+  const [items, setItems] = useState<Item[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [translatingAll, setTranslatingAll] = useState(false);
+
+  // Check auth on mount
   useEffect(() => {
-    const allMessages: string[] = [];
-
-    // Listen for ALL postMessages from parent (Webflow Designer)
-    const onMessage = (ev: MessageEvent) => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const w = window as any;
-      const full = typeof ev.data === "object" ? JSON.stringify(ev.data) : String(ev.data);
-      const entry = `[${new Date().toISOString().slice(11,19)}] origin=${ev.origin}\n${full.slice(0, 300)}`;
-      allMessages.push(entry);
-      addDebug(entry);
-
-      // If Webflow sends the sdk object via message, capture it
-      if (ev.data && typeof ev.data === "object") {
-        if (ev.data.webflow) w.webflow = ev.data.webflow;
-        if (ev.data.type === "webflow:sdk:ready" || ev.data.type === "sdk:ready") {
-          addDebug("SDK ready message received!");
+    fetch("/api/auth/status", { credentials: "include" })
+      .then((r) => r.json())
+      .then((d) => {
+        if (d.authenticated) {
+          setAuthed(true);
+          setStage("sites");
+        } else {
+          setStage("auth");
         }
-      }
-    };
-    window.addEventListener("message", onMessage);
-
-    // Try sending multiple ready signals to see which one triggers SDK
-    const signals = [
-      { type: "webflow:extension:ready" },
-      { type: "extensionReady" },
-      { type: "wf:ready" },
-      { type: "extension:ready" },
-      { action: "init" },
-      { msg: "ready" },
-    ];
-    signals.forEach((msg) => {
-      try { window.parent?.postMessage(msg, "*"); } catch { /* cross-origin */ }
-    });
-
-    // Check injected scripts after a short delay
-    setTimeout(() => {
-      const scripts = Array.from(document.querySelectorAll("script[src]")).map((s) => (s as HTMLScriptElement).src);
-      addDebug("Scripts loaded: " + (scripts.join(", ") || "none"));
-    }, 1000);
-
-    return () => window.removeEventListener("message", onMessage);
+      })
+      .catch(() => setStage("auth"));
   }, []);
 
+  // Load sites when stage changes to "sites"
   useEffect(() => {
-    const tryInit = (): boolean => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const w = window as any;
-      const sdk = w.webflow ?? w._webflow ?? w.__webflow ?? null;
-      if (sdk && typeof sdk === "object") {
-        setWf(sdk);
-        setSdkReady(true);
-        setSdkMsg("");
-        addDebug("SDK found: " + Object.keys(sdk).slice(0, 5).join(", "));
-        return true;
-      }
-      return false;
-    };
+    if (stage !== "sites") return;
+    setLoading(true);
+    setError("");
+    fetch("/api/sites", { credentials: "include" })
+      .then((r) => r.json())
+      .then((d) => {
+        if (d.error) throw new Error(d.error);
+        const list: Site[] = (d.sites ?? []).map((s: { id: string; displayName: string }) => ({ id: s.id, displayName: s.displayName }));
+        setSites(list);
+        if (list.length === 1) setSiteId(list[0].id);
+      })
+      .catch((e) => setError(e.message))
+      .finally(() => setLoading(false));
+  }, [stage]);
 
-    if (!tryInit()) {
-      const interval = setInterval(() => {
-        if (tryInit()) clearInterval(interval);
-      }, 500);
-      const timeout = setTimeout(() => {
-        clearInterval(interval);
-        setSdkMsg("SDK not connected. See debug below.");
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const w = window as any;
-        const wfKeys = Object.keys(w).filter(k => k.toLowerCase().includes("webflow") || k.toLowerCase().includes("wf") || k === "designer");
-        addDebug("window wf-keys: " + (wfKeys.join(", ") || "none"));
-        addDebug("in iframe: " + (window.parent !== window));
-        setShowDebug(true);
-      }, 8000);
-      return () => { clearInterval(interval); clearTimeout(timeout); };
+  // Load collections when site changes
+  useEffect(() => {
+    if (!siteId) return;
+    setCollections([]);
+    setCollectionId("");
+    setItems([]);
+    setLoading(true);
+    setError("");
+    fetch(`/api/collections?siteId=${siteId}`, { credentials: "include" })
+      .then((r) => r.json())
+      .then((d) => {
+        if (d.error) throw new Error(d.error);
+        const list: Collection[] = (d.collections ?? []).map((c: { id: string; displayName: string }) => ({ id: c.id, displayName: c.displayName }));
+        setCollections(list);
+        setStage("collections");
+      })
+      .catch((e) => setError(e.message))
+      .finally(() => setLoading(false));
+  }, [siteId]);
+
+  const loadItems = useCallback(async () => {
+    if (!collectionId) return;
+    setLoading(true);
+    setError("");
+    setItems([]);
+    try {
+      const r = await fetch(`/api/items?collectionId=${collectionId}`, { credentials: "include" });
+      const d = await r.json();
+      if (d.error) throw new Error(d.error);
+      const rawItems = d.items ?? [];
+      const parsed: Item[] = rawItems.map((item: { id: string; fieldData: Record<string, string> }) => {
+        const fd = item.fieldData ?? {};
+        const fields: ItemField[] = Object.entries(fd)
+          .filter(([slug, val]) => !SKIP_FIELDS.has(slug) && typeof val === "string" && val.trim().length > 0)
+          .map(([slug, val]) => ({ slug, label: slug, value: String(val) }));
+        return {
+          id: item.id,
+          name: String(fd.name ?? fd.slug ?? item.id),
+          fields,
+          expanded: false,
+        };
+      });
+      setItems(parsed);
+      setStage("items");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to load items");
+    } finally {
+      setLoading(false);
     }
-  }, []);
-
-  // Subscribe to selected element
-  useEffect(() => {
-    if (!wf || !sdkReady) return;
-
-    let unsub: (() => void) | null = null;
-
-    const subscribe = async () => {
-      try {
-        if (typeof wf.subscribe === "function") {
-          unsub = wf.subscribe("currentElement", async (el: WF) => {
-            if (!el) { setSelected(null); return; }
-            const tag = await el.getTag?.();
-            if (!TARGET_TAGS.includes(tag ?? "")) { setSelected(null); return; }
-            const text = await el.getTextContent?.();
-            if (!text?.trim()) { setSelected(null); return; }
-            setSelected({ id: el.id, tag: tag ?? "?", text: text.trim() });
-          });
-        } else if (typeof wf.subscribeToCurrentElement === "function") {
-          unsub = wf.subscribeToCurrentElement(async (el: WF) => {
-            if (!el) { setSelected(null); return; }
-            const tag = await el.getTag?.();
-            if (!TARGET_TAGS.includes(tag ?? "")) { setSelected(null); return; }
-            const text = await el.getTextContent?.();
-            if (!text?.trim()) { setSelected(null); return; }
-            setSelected({ id: el.id, tag: tag ?? "?", text: text.trim() });
-          });
-        }
-      } catch { /* ignore */ }
-    };
-
-    subscribe();
-    return () => { unsub?.(); };
-  }, [wf, sdkReady]);
+  }, [collectionId]);
 
   const callTranslate = async (texts: string[]): Promise<string[]> => {
     const res = await fetch("/api/translate", {
@@ -171,195 +136,205 @@ export default function PanelPage() {
     return data.translations as string[];
   };
 
-  const applyToElement = async (elementId: string, text: string) => {
-    const all = await wf.getAllElements();
-    const el = all.find((e: WF) => e.id === elementId);
-    if (el) await el.setTextContent?.(text);
+  const updateItem = async (itemId: string, fieldData: Record<string, string>) => {
+    const res = await fetch(`/api/items/update`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ collectionId, itemId, fieldData }),
+    });
+    if (!res.ok) {
+      const d = await res.json();
+      throw new Error(d.error ?? "Update failed");
+    }
   };
 
-  // Translate selected element
-  const translateSelected = async () => {
-    if (!selected || !wf) return;
-    setStatus("translating-one");
-    setError("");
+  const translateItem = async (itemIndex: number) => {
+    const item = items[itemIndex];
+    if (!item || item.fields.length === 0) return;
+
+    setItems((prev) => prev.map((it, i) => i === itemIndex ? { ...it, translating: true } : it));
     try {
-      const [translated] = await callTranslate([selected.text]);
-      await applyToElement(selected.id, translated);
-      setSelected((s) => s ? { ...s, text: translated } : null);
-      setStatus("idle");
+      const texts = item.fields.map((f) => f.value);
+      const translations = await callTranslate(texts);
+      const fieldData: Record<string, string> = {};
+      const updatedFields = item.fields.map((f, fi) => {
+        fieldData[f.slug] = translations[fi];
+        return { ...f, translated: translations[fi] };
+      });
+      await updateItem(item.id, fieldData);
+      setItems((prev) => prev.map((it, i) => i === itemIndex ? { ...it, fields: updatedFields, translating: false } : it));
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed");
-      setStatus("error");
+      setItems((prev) => prev.map((it, i) => i === itemIndex ? { ...it, translating: false } : it));
     }
   };
 
-  // Scan all page elements
-  const scan = useCallback(async () => {
-    if (!wf) return;
-    setStatus("scanning");
-    setError("");
-    setScanDone(false);
-    try {
-      const all = await wf.getAllElements();
-      const found: TextNode[] = [];
-      for (const el of all) {
-        const tag = await el.getTag?.();
-        if (!TARGET_TAGS.includes(tag ?? "")) continue;
-        const text = await el.getTextContent?.();
-        if (!text?.trim()) continue;
-        found.push({ id: el.id, tag: tag ?? "?", text: text.trim() });
-      }
-      setNodes(found);
-      setScanDone(true);
-      setStatus("idle");
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Scan failed");
-      setStatus("error");
-    }
-  }, [wf]);
-
-  // Translate single node from list
-  const translateNode = async (index: number) => {
-    setNodes((prev) => prev.map((n, i) => i === index ? { ...n, translating: true } : n));
-    try {
-      const [translated] = await callTranslate([nodes[index].text]);
-      await applyToElement(nodes[index].id, translated);
-      setNodes((prev) => prev.map((n, i) => i === index ? { ...n, text: translated, translated, translating: false } : n));
-    } catch {
-      setNodes((prev) => prev.map((n, i) => i === index ? { ...n, translating: false } : n));
-    }
-  };
-
-  // Translate all nodes
   const translateAll = async () => {
-    if (!wf || nodes.length === 0) return;
-    setStatus("translating-all");
+    if (items.length === 0) return;
+    setTranslatingAll(true);
     setError("");
-    try {
-      const texts = nodes.map((n) => n.text);
-      const translations = await callTranslate(texts);
-      for (let i = 0; i < nodes.length; i++) {
-        await applyToElement(nodes[i].id, translations[i]);
-        setNodes((prev) => prev.map((n, idx) => idx === i ? { ...n, text: translations[i], translated: translations[i] } : n));
+    for (let i = 0; i < items.length; i++) {
+      if (items[i].fields.length > 0) {
+        await translateItem(i);
       }
-      setStatus("idle");
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Translation failed");
-      setStatus("error");
     }
+    setTranslatingAll(false);
   };
 
-  const busy = status === "scanning" || status === "translating-one" || status === "translating-all";
+  const toggleExpand = (i: number) => setItems((prev) => prev.map((it, idx) => idx === i ? { ...it, expanded: !it.expanded } : it));
+
+  const anyTranslated = items.some((it) => it.fields.some((f) => f.translated));
 
   return (
     <div className="flex flex-col h-screen bg-[#1a1a1a] text-[#e8e8e8] text-sm font-sans">
       {/* Header */}
       <div className="flex items-center gap-2 px-4 py-3 border-b border-white/10 shrink-0">
-        <span>🌐</span>
+        <span className="text-base">🌐</span>
         <span className="font-semibold text-white">Auto Translate</span>
       </div>
 
-      <div className="flex flex-col gap-4 p-4 flex-1 overflow-auto">
+      <div className="flex flex-col gap-3 p-4 flex-1 overflow-auto">
 
-        {/* SDK not ready */}
-        {!sdkReady && (
-          <div className="bg-yellow-900/30 border border-yellow-700/40 rounded px-3 py-2 text-xs text-yellow-300">
-            {sdkMsg || "Connecting…"}
-            <button onClick={() => setShowDebug((v) => !v)} className="ml-2 underline opacity-60">debug</button>
-          </div>
-        )}
-
-        {/* Debug panel */}
-        {showDebug && (
-          <div className="bg-[#111] border border-white/10 rounded px-2 py-2 text-[10px] font-mono text-[#666] space-y-0.5 max-h-48 overflow-auto">
-            {debugMsgs.length === 0 ? <div>No messages received</div> : debugMsgs.map((m, i) => <div key={i}>{m}</div>)}
-          </div>
-        )}
-
-        {/* Language */}
-        <div>
-          <p className="text-[10px] uppercase tracking-widest text-[#666] mb-1">Target Language</p>
-          <select
-            value={language}
-            onChange={(e) => setLanguage(e.target.value)}
-            className="w-full bg-[#2a2a2a] border border-white/10 rounded px-2 py-1.5 text-white text-sm focus:outline-none focus:border-[#0073e6]"
-          >
-            {LANGUAGES.map((l) => (
-              <option key={l.value} value={l.value}>{l.label}</option>
-            ))}
-          </select>
-        </div>
-
-        {/* Selected element */}
-        {selected && (
-          <div className="flex flex-col gap-2">
-            <p className="text-[10px] uppercase tracking-widest text-[#666]">Selected Element</p>
-            <div className="bg-[#242424] rounded px-3 py-2 flex flex-col gap-1">
-              <span className="text-[#0073e6] font-mono text-xs">{`<${selected.tag}>`}</span>
-              <span className="text-[#ccc] text-xs leading-relaxed line-clamp-2">{selected.text}</span>
-            </div>
-            <button
-              onClick={translateSelected}
-              disabled={busy}
-              className="w-full bg-[#0073e6] hover:bg-[#0066cc] rounded px-3 py-2 text-sm text-white font-medium transition-colors disabled:opacity-40"
+        {/* Not authenticated */}
+        {stage === "auth" && (
+          <div className="flex flex-col gap-3">
+            <p className="text-xs text-[#aaa]">Connect your Webflow account to get started.</p>
+            <a
+              href="/install"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="w-full bg-[#0073e6] hover:bg-[#0066cc] rounded px-3 py-2 text-sm text-white font-medium text-center transition-colors"
             >
-              {status === "translating-one" ? "Translating…" : `Translate to ${language}`}
-            </button>
+              Connect Webflow Account
+            </a>
           </div>
         )}
 
-        {/* Divider */}
-        {selected && <div className="border-t border-white/10" />}
-
-        {/* Scan all */}
-        <button
-          onClick={scan}
-          disabled={busy || !sdkReady}
-          className="w-full bg-[#2a2a2a] hover:bg-[#333] border border-white/10 rounded px-3 py-2 text-sm text-white transition-colors disabled:opacity-40"
-        >
-          {status === "scanning" ? "Scanning…" : "Scan All Page Elements"}
-        </button>
-
-        {/* Scanned nodes list */}
-        {scanDone && nodes.length > 0 && (
-          <div className="flex flex-col gap-2">
-            <div className="flex items-center justify-between">
-              <p className="text-[10px] uppercase tracking-widest text-[#666]">{nodes.length} elements</p>
+        {authed && (
+          <>
+            {/* Language */}
+            <div>
+              <p className="text-[10px] uppercase tracking-widest text-[#666] mb-1">Target Language</p>
+              <select
+                value={language}
+                onChange={(e) => setLanguage(e.target.value)}
+                className="w-full bg-[#2a2a2a] border border-white/10 rounded px-2 py-1.5 text-white text-sm focus:outline-none focus:border-[#0073e6]"
+              >
+                {LANGUAGES.map((l) => (
+                  <option key={l.value} value={l.value}>{l.label}</option>
+                ))}
+              </select>
             </div>
-            <div className="flex flex-col gap-1 max-h-48 overflow-auto">
-              {nodes.map((n, i) => (
-                <div key={i} className="flex items-center gap-2 bg-[#242424] rounded px-2 py-1.5">
-                  <span className="text-[#0073e6] font-mono text-[10px] shrink-0">{`<${n.tag}>`}</span>
-                  <span className={`text-xs flex-1 truncate ${n.translated ? "text-green-400" : "text-[#aaa]"}`}>
-                    {n.text}
-                  </span>
-                  <button
-                    onClick={() => translateNode(i)}
-                    disabled={busy || n.translating}
-                    className="shrink-0 text-[10px] text-[#0073e6] hover:text-white disabled:opacity-40 transition-colors"
-                  >
-                    {n.translating ? "…" : "↻"}
-                  </button>
+
+            {/* Site */}
+            {sites.length > 0 && (
+              <div>
+                <p className="text-[10px] uppercase tracking-widest text-[#666] mb-1">Site</p>
+                <select
+                  value={siteId}
+                  onChange={(e) => { setSiteId(e.target.value); setCollectionId(""); setItems([]); }}
+                  className="w-full bg-[#2a2a2a] border border-white/10 rounded px-2 py-1.5 text-white text-sm focus:outline-none focus:border-[#0073e6]"
+                >
+                  <option value="">Select a site…</option>
+                  {sites.map((s) => <option key={s.id} value={s.id}>{s.displayName}</option>)}
+                </select>
+              </div>
+            )}
+
+            {/* Collection */}
+            {collections.length > 0 && (
+              <div>
+                <p className="text-[10px] uppercase tracking-widest text-[#666] mb-1">Collection</p>
+                <select
+                  value={collectionId}
+                  onChange={(e) => { setCollectionId(e.target.value); setItems([]); }}
+                  className="w-full bg-[#2a2a2a] border border-white/10 rounded px-2 py-1.5 text-white text-sm focus:outline-none focus:border-[#0073e6]"
+                >
+                  <option value="">Select a collection…</option>
+                  {collections.map((c) => <option key={c.id} value={c.id}>{c.displayName}</option>)}
+                </select>
+              </div>
+            )}
+
+            {/* Load items button */}
+            {collectionId && (
+              <button
+                onClick={loadItems}
+                disabled={loading}
+                className="w-full bg-[#2a2a2a] hover:bg-[#333] border border-white/10 rounded px-3 py-2 text-sm text-white transition-colors disabled:opacity-40"
+              >
+                {loading ? "Loading…" : "Load Items"}
+              </button>
+            )}
+
+            {/* Items list */}
+            {items.length > 0 && (
+              <div className="flex flex-col gap-2">
+                <div className="flex items-center justify-between">
+                  <p className="text-[10px] uppercase tracking-widest text-[#666]">{items.length} items</p>
+                  {anyTranslated && <span className="text-[10px] text-green-400">✓ updated</span>}
                 </div>
-              ))}
-            </div>
 
-            <button
-              onClick={translateAll}
-              disabled={busy}
-              className="w-full bg-[#0073e6] hover:bg-[#0066cc] rounded px-3 py-2 text-sm text-white font-medium transition-colors disabled:opacity-40"
-            >
-              {status === "translating-all" ? "Translating…" : `Translate All to ${language}`}
-            </button>
-          </div>
+                <div className="flex flex-col gap-1 max-h-64 overflow-auto pr-0.5">
+                  {items.map((item, i) => (
+                    <div key={item.id} className="bg-[#242424] rounded overflow-hidden">
+                      <div className="flex items-center gap-2 px-2 py-1.5">
+                        <button
+                          onClick={() => toggleExpand(i)}
+                          className="text-[10px] text-[#555] shrink-0"
+                        >
+                          {item.expanded ? "▾" : "▸"}
+                        </button>
+                        <span className="text-xs flex-1 truncate text-[#ccc]">{item.name}</span>
+                        <button
+                          onClick={() => translateItem(i)}
+                          disabled={translatingAll || item.translating}
+                          className="shrink-0 text-[10px] text-[#0073e6] hover:text-white disabled:opacity-40 transition-colors px-1"
+                        >
+                          {item.translating ? "…" : "↻"}
+                        </button>
+                      </div>
+                      {item.expanded && (
+                        <div className="px-2 pb-2 flex flex-col gap-1 border-t border-white/5 pt-1">
+                          {item.fields.map((f) => (
+                            <div key={f.slug} className="flex flex-col gap-0.5">
+                              <span className="text-[9px] text-[#555] uppercase">{f.label}</span>
+                              <span className="text-[10px] text-[#888] truncate">{f.value.slice(0, 80)}</span>
+                              {f.translated && (
+                                <span className="text-[10px] text-green-400 truncate">→ {f.translated.slice(0, 80)}</span>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+
+                <button
+                  onClick={translateAll}
+                  disabled={translatingAll || loading}
+                  className="w-full bg-[#0073e6] hover:bg-[#0066cc] rounded px-3 py-2 text-sm text-white font-medium transition-colors disabled:opacity-40"
+                >
+                  {translatingAll ? "Translating…" : `Translate All to ${language}`}
+                </button>
+              </div>
+            )}
+
+            {stage === "items" && items.length === 0 && !loading && (
+              <p className="text-xs text-[#555]">No items found in this collection.</p>
+            )}
+          </>
         )}
 
-        {scanDone && nodes.length === 0 && (
-          <p className="text-xs text-[#555]">No text elements found on this page.</p>
+        {/* Loading spinner */}
+        {loading && (
+          <div className="text-xs text-[#555] text-center py-2">Loading…</div>
         )}
 
         {/* Error */}
-        {status === "error" && error && (
+        {error && (
           <div className="bg-red-900/30 border border-red-700/40 rounded px-3 py-2 text-xs text-red-400">
             {error}
           </div>
