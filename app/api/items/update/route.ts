@@ -2,10 +2,11 @@ import { NextRequest, NextResponse } from "next/server";
 import { getWfToken } from "@/lib/auth";
 
 export async function POST(req: NextRequest) {
-  const { collectionId, itemId, fieldData } = await req.json() as {
+  const { collectionId, itemId, fieldData, cmsLocaleId } = await req.json() as {
     collectionId: string;
     itemId: string;
     fieldData: Record<string, string>;
+    cmsLocaleId?: string;
   };
 
   if (!collectionId || !itemId || !fieldData) {
@@ -15,8 +16,12 @@ export async function POST(req: NextRequest) {
   const token = await getWfToken();
   if (!token) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
 
+  const url = cmsLocaleId
+    ? `https://api.webflow.com/v2/collections/${collectionId}/items/${itemId}?cmsLocaleId=${cmsLocaleId}`
+    : `https://api.webflow.com/v2/collections/${collectionId}/items/${itemId}`;
+
   const res = await fetch(
-    `https://api.webflow.com/v2/collections/${collectionId}/items/${itemId}`,
+    url,
     {
       method: "PATCH",
       headers: {

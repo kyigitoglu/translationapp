@@ -81,6 +81,10 @@ export default function PanelPage() {
   const [sites, setSites] = useState<Site[]>([]);
   const [siteId, setSiteId] = useState("");
 
+  const [locales, setLocales] = useState<{ id: string; label: string; tag: string }[]>([]);
+  const [cmsLocaleId, setCmsLocaleId] = useState("");
+  const [manualLocaleId, setManualLocaleId] = useState("");
+
   const [collections, setCollections] = useState<Collection[]>([]);
   const [collectionId, setCollectionId] = useState("");
 
@@ -120,20 +124,37 @@ export default function PanelPage() {
       .finally(() => setLoading(false));
   }, [stage]);
 
-  // Load collections when site changes
+  // Load collections + locales when site changes
   useEffect(() => {
     if (!siteId) return;
     setCollections([]);
     setCollectionId("");
     setItems([]);
+    setLocales([]);
+    setCmsLocaleId("");
     setLoading(true);
     setError("");
-    fetch(`/api/collections?siteId=${siteId}`, { credentials: "include" })
-      .then((r) => r.json())
-      .then((d) => {
-        if (d.error) throw new Error(d.error);
-        const list: Collection[] = (d.collections ?? []).map((c: { id: string; displayName: string }) => ({ id: c.id, displayName: c.displayName }));
+
+    Promise.all([
+      fetch(`/api/collections?siteId=${siteId}`, { credentials: "include" }).then((r) => r.json()),
+      fetch(`/api/locales?siteId=${siteId}`, { credentials: "include" }).then((r) => r.json()),
+    ])
+      .then(([colData, locData]) => {
+        if (colData.error) throw new Error(colData.error);
+        const list: Collection[] = (colData.collections ?? []).map((c: { id: string; displayName: string }) => ({ id: c.id, displayName: c.displayName }));
         setCollections(list);
+
+        // Locales (secondary only — these are what we write translations to)
+        const secondary = locData.secondaryLocales ?? [];
+        if (secondary.length > 0) {
+          const mapped = secondary.map((l: { id: string; displayName: string; tag: string; cmsId?: string }) => ({
+            id: l.cmsId ?? l.id,
+            label: l.displayName ?? l.tag,
+            tag: l.tag,
+          }));
+          setLocales(mapped);
+          setCmsLocaleId(mapped[0].id);
+        }
         setStage("collections");
       })
       .catch((e) => setError(e.message))
@@ -184,11 +205,12 @@ export default function PanelPage() {
   };
 
   const updateItem = async (itemId: string, fieldData: Record<string, string>) => {
+    const effectiveLocaleId = cmsLocaleId || manualLocaleId || undefined;
     const res = await fetch(`/api/items/update`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       credentials: "include",
-      body: JSON.stringify({ collectionId, itemId, fieldData }),
+      body: JSON.stringify({ collectionId, itemId, fieldData, cmsLocaleId: effectiveLocaleId }),
     });
     if (!res.ok) {
       const d = await res.json();
@@ -293,6 +315,35 @@ export default function PanelPage() {
                   options={collections.map((c) => ({ label: c.displayName, value: c.id }))}
                   placeholder="Select a collection…"
                 />
+              </div>
+            )}
+
+            {/* Target Locale */}
+            {collectionId && (
+              <div>
+                <p className="text-[10px] uppercase tracking-widest text-[#666] mb-1">
+                  Target Locale
+                  {locales.length > 0 && <span className="ml-1 text-green-400">✓ detected</span>}
+                </p>
+                {locales.length > 0 ? (
+                  <Dropdown
+                    value={cmsLocaleId}
+                    onChange={setCmsLocaleId}
+                    options={locales.map((l) => ({ label: `${l.label} (${l.tag})`, value: l.id }))}
+                    placeholder="Select locale…"
+                  />
+                ) : (
+                  <div className="flex flex-col gap-1">
+                    <input
+                      type="text"
+                      placeholder="Paste FR locale ID (from Webflow)"
+                      value={manualLocaleId}
+                      onChange={(e) => setManualLocaleId(e.target.value)}
+                      className="w-full bg-[#2a2a2a] border border-white/10 rounded px-2 py-1.5 text-white text-xs focus:outline-none focus:border-[#0073e6] placeholder:text-[#444]"
+                    />
+                    <p className="text-[9px] text-[#444]">Leave empty to overwrite primary (EN) content</p>
+                  </div>
+                )}
               </div>
             )}
 
