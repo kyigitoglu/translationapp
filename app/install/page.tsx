@@ -10,7 +10,7 @@ function InstallContent() {
 
   const clientId = process.env.NEXT_PUBLIC_WEBFLOW_CLIENT_ID ?? "";
   const redirectUri = `${typeof window !== "undefined" ? window.location.origin : "https://translationapp-ivory.vercel.app"}/api/auth/callback`;
-  const authUrl = `https://webflow.com/oauth/authorize?client_id=${clientId}&response_type=code&scope=sites%3Aread%20sites%3Awrite%20pages%3Aread%20pages%3Awrite&redirect_uri=${encodeURIComponent(redirectUri)}`;
+  const authUrl = `https://webflow.com/oauth/authorize?client_id=${clientId}&response_type=code&scope=sites%3Aread%20sites%3Awrite%20pages%3Aread%20pages%3Awrite%20cms%3Aread%20cms%3Awrite&redirect_uri=${encodeURIComponent(redirectUri)}`;
 
   return (
     <main className="flex min-h-screen items-center justify-center bg-[#1a1a1a] text-white font-sans p-8">
