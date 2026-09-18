@@ -9,7 +9,6 @@ function InstallContent() {
   const error = params.get("error");
 
   const clientId = process.env.NEXT_PUBLIC_WEBFLOW_CLIENT_ID ?? "";
-  const redirectUri = `${typeof window !== "undefined" ? window.location.origin : ""}/api/auth/callback`;
   const redirectUri = `${typeof window !== "undefined" ? window.location.origin : "https://translationapp-ivory.vercel.app"}/api/auth/callback`;
   const authUrl = `https://webflow.com/oauth/authorize?client_id=${clientId}&response_type=code&scope=sites%3Aread%20sites%3Awrite%20pages%3Aread%20pages%3Awrite&redirect_uri=${encodeURIComponent(redirectUri)}`;
 
