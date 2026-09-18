@@ -72,6 +72,11 @@ export default function PanelPage() {
   const [authed, setAuthed] = useState<boolean | null>(null);
   const [error, setError] = useState("");
 
+  // Manual translate
+  const [manualText, setManualText] = useState("");
+  const [manualResult, setManualResult] = useState("");
+  const [manualBusy, setManualBusy] = useState(false);
+
   const [sites, setSites] = useState<Site[]>([]);
   const [siteId, setSiteId] = useState("");
 
@@ -209,6 +214,20 @@ export default function PanelPage() {
     }
   };
 
+  const translateManual = async () => {
+    if (!manualText.trim()) return;
+    setManualBusy(true);
+    setManualResult("");
+    try {
+      const [translated] = await callTranslate([manualText.trim()]);
+      setManualResult(translated);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed");
+    } finally {
+      setManualBusy(false);
+    }
+  };
+
   const anyTranslated = textNodes.some((n) => n.translated);
   const busy = loading || translatingAll;
 
@@ -247,6 +266,32 @@ export default function PanelPage() {
               <p className="text-[10px] uppercase tracking-widest text-[#666] mb-1">Target Language</p>
               <Dropdown value={language} onChange={setLanguage} options={LANGUAGES} />
             </div>
+
+            {/* Manual translate */}
+            <div className="flex flex-col gap-1.5">
+              <p className="text-[10px] uppercase tracking-widest text-[#666]">Quick Translate</p>
+              <textarea
+                value={manualText}
+                onChange={(e) => { setManualText(e.target.value); setManualResult(""); }}
+                placeholder="Paste or type text here…"
+                rows={3}
+                className="w-full bg-[#2a2a2a] border border-white/10 rounded px-2 py-1.5 text-white text-xs resize-none focus:outline-none focus:border-[#0073e6] placeholder:text-[#444]"
+              />
+              {manualResult && (
+                <div className="bg-[#1e2e1e] border border-green-800/40 rounded px-2 py-1.5 text-xs text-green-400 select-all">
+                  {manualResult}
+                </div>
+              )}
+              <button
+                onClick={translateManual}
+                disabled={manualBusy || !manualText.trim()}
+                className="w-full bg-[#0073e6] hover:bg-[#0066cc] rounded px-3 py-1.5 text-xs text-white font-medium transition-colors disabled:opacity-40"
+              >
+                {manualBusy ? "Translating…" : `Translate to ${language}`}
+              </button>
+            </div>
+
+            <div className="border-t border-white/10" />
 
             {/* Site */}
             {sites.length > 0 && (

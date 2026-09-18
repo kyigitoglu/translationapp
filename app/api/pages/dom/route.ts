@@ -1,21 +1,27 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getWfToken } from "@/lib/auth";
 
-// Extract all text strings from Webflow DOM node tree
-function extractTextNodes(nodes: WFNode[], localeId?: string): TextEntry[] {
+// Extract all text strings from Webflow DOM node tree (walks all levels including components/slots)
+function extractTextNodes(nodes: WFNode[]): TextEntry[] {
   const results: TextEntry[] = [];
+  const seen = new Set<string>();
 
   function walk(node: WFNode) {
-    // Text node with content
-    if (node.type === "text" && node.text?.text) {
+    // Text node with actual content
+    if (node.text?.text) {
       const text = node.text.text.trim();
-      if (text.length > 1) {
-        results.push({ nodeId: node.id, text, type: "text" });
+      if (text.length > 1 && !seen.has(text)) {
+        seen.add(text);
+        results.push({ nodeId: node.id, text, type: node.type ?? "text" });
       }
     }
-    // Element with children
-    if (node.children) {
+    // Recurse into children (covers components, slots, divs, etc.)
+    if (Array.isArray(node.children)) {
       for (const child of node.children) walk(child);
+    }
+    // Some node shapes use "nodes" instead of "children"
+    if (Array.isArray(node.nodes)) {
+      for (const child of node.nodes) walk(child);
     }
   }
 
@@ -25,9 +31,10 @@ function extractTextNodes(nodes: WFNode[], localeId?: string): TextEntry[] {
 
 interface WFNode {
   id: string;
-  type: string;
+  type?: string;
   text?: { text: string };
   children?: WFNode[];
+  nodes?: WFNode[];
 }
 
 interface TextEntry {
@@ -60,7 +67,7 @@ export async function GET(req: NextRequest) {
 
   const data = await res.json();
   const nodes: WFNode[] = data.nodes ?? data.dom ?? [];
-  const textNodes = extractTextNodes(nodes, localeId);
+  const textNodes = extractTextNodes(nodes);
 
   return NextResponse.json({ textNodes, raw: data });
 }
