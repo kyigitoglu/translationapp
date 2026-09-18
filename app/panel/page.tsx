@@ -1,6 +1,53 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
+
+// Custom dropdown to avoid native <select> triggering Webflow Designer keyboard shortcuts
+function Dropdown({ value, onChange, options, placeholder }: {
+  value: string;
+  onChange: (v: string) => void;
+  options: { label: string; value: string }[];
+  placeholder?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const selected = options.find((o) => o.value === value);
+
+  useEffect(() => {
+    const onDown = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, []);
+
+  return (
+    <div ref={ref} className="relative w-full">
+      <button
+        type="button"
+        onClick={(e) => { e.stopPropagation(); setOpen((v) => !v); }}
+        className="w-full bg-[#2a2a2a] border border-white/10 rounded px-2 py-1.5 text-sm text-left flex items-center justify-between focus:outline-none focus:border-[#0073e6]"
+      >
+        <span className={selected ? "text-white" : "text-[#555]"}>{selected?.label ?? placeholder ?? "Select…"}</span>
+        <span className="text-[#555] text-xs">{open ? "▴" : "▾"}</span>
+      </button>
+      {open && (
+        <div className="absolute z-50 top-full left-0 right-0 mt-0.5 bg-[#2a2a2a] border border-white/10 rounded shadow-xl max-h-48 overflow-auto">
+          {options.map((o) => (
+            <button
+              key={o.value}
+              type="button"
+              onClick={(e) => { e.stopPropagation(); onChange(o.value); setOpen(false); }}
+              className={`w-full text-left px-3 py-1.5 text-sm hover:bg-white/5 transition-colors ${o.value === value ? "text-[#0073e6]" : "text-[#ccc]"}`}
+            >
+              {o.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 const LANGUAGES = [
   { label: "Turkish", value: "Turkish" },
@@ -216,29 +263,23 @@ export default function PanelPage() {
             {/* Language */}
             <div>
               <p className="text-[10px] uppercase tracking-widest text-[#666] mb-1">Target Language</p>
-              <select
+              <Dropdown
                 value={language}
-                onChange={(e) => setLanguage(e.target.value)}
-                className="w-full bg-[#2a2a2a] border border-white/10 rounded px-2 py-1.5 text-white text-sm focus:outline-none focus:border-[#0073e6]"
-              >
-                {LANGUAGES.map((l) => (
-                  <option key={l.value} value={l.value}>{l.label}</option>
-                ))}
-              </select>
+                onChange={setLanguage}
+                options={LANGUAGES}
+              />
             </div>
 
             {/* Site */}
             {sites.length > 0 && (
               <div>
                 <p className="text-[10px] uppercase tracking-widest text-[#666] mb-1">Site</p>
-                <select
+                <Dropdown
                   value={siteId}
-                  onChange={(e) => { setSiteId(e.target.value); setCollectionId(""); setItems([]); }}
-                  className="w-full bg-[#2a2a2a] border border-white/10 rounded px-2 py-1.5 text-white text-sm focus:outline-none focus:border-[#0073e6]"
-                >
-                  <option value="">Select a site…</option>
-                  {sites.map((s) => <option key={s.id} value={s.id}>{s.displayName}</option>)}
-                </select>
+                  onChange={(v) => { setSiteId(v); setCollectionId(""); setItems([]); }}
+                  options={sites.map((s) => ({ label: s.displayName, value: s.id }))}
+                  placeholder="Select a site…"
+                />
               </div>
             )}
 
@@ -246,14 +287,12 @@ export default function PanelPage() {
             {collections.length > 0 && (
               <div>
                 <p className="text-[10px] uppercase tracking-widest text-[#666] mb-1">Collection</p>
-                <select
+                <Dropdown
                   value={collectionId}
-                  onChange={(e) => { setCollectionId(e.target.value); setItems([]); }}
-                  className="w-full bg-[#2a2a2a] border border-white/10 rounded px-2 py-1.5 text-white text-sm focus:outline-none focus:border-[#0073e6]"
-                >
-                  <option value="">Select a collection…</option>
-                  {collections.map((c) => <option key={c.id} value={c.id}>{c.displayName}</option>)}
-                </select>
+                  onChange={(v) => { setCollectionId(v); setItems([]); }}
+                  options={collections.map((c) => ({ label: c.displayName, value: c.id }))}
+                  placeholder="Select a collection…"
+                />
               </div>
             )}
 
