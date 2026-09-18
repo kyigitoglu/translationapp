@@ -49,17 +49,46 @@ export default function PanelPage() {
 
   // Init SDK
   useEffect(() => {
+    const allMessages: string[] = [];
+
     // Listen for ALL postMessages from parent (Webflow Designer)
     const onMessage = (ev: MessageEvent) => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const w = window as any;
-      addDebug(`MSG origin=${ev.origin} type=${typeof ev.data === "object" ? JSON.stringify(ev.data)?.slice(0, 80) : String(ev.data).slice(0, 80)}`);
+      const full = typeof ev.data === "object" ? JSON.stringify(ev.data) : String(ev.data);
+      const entry = `[${new Date().toISOString().slice(11,19)}] origin=${ev.origin}\n${full.slice(0, 300)}`;
+      allMessages.push(entry);
+      addDebug(entry);
+
       // If Webflow sends the sdk object via message, capture it
-      if (ev.data && typeof ev.data === "object" && ev.data.webflow) {
-        w.webflow = ev.data.webflow;
+      if (ev.data && typeof ev.data === "object") {
+        if (ev.data.webflow) w.webflow = ev.data.webflow;
+        if (ev.data.type === "webflow:sdk:ready" || ev.data.type === "sdk:ready") {
+          addDebug("SDK ready message received!");
+        }
       }
     };
     window.addEventListener("message", onMessage);
+
+    // Try sending multiple ready signals to see which one triggers SDK
+    const signals = [
+      { type: "webflow:extension:ready" },
+      { type: "extensionReady" },
+      { type: "wf:ready" },
+      { type: "extension:ready" },
+      { action: "init" },
+      { msg: "ready" },
+    ];
+    signals.forEach((msg) => {
+      try { window.parent?.postMessage(msg, "*"); } catch { /* cross-origin */ }
+    });
+
+    // Check injected scripts after a short delay
+    setTimeout(() => {
+      const scripts = Array.from(document.querySelectorAll("script[src]")).map((s) => (s as HTMLScriptElement).src);
+      addDebug("Scripts loaded: " + (scripts.join(", ") || "none"));
+    }, 1000);
+
     return () => window.removeEventListener("message", onMessage);
   }, []);
 
@@ -78,29 +107,18 @@ export default function PanelPage() {
       return false;
     };
 
-    // Announce to parent that extension is ready (some bridges require this)
-    try {
-      window.parent?.postMessage({ type: "webflow:extension:ready" }, "*");
-      window.parent?.postMessage({ type: "extensionReady" }, "*");
-    } catch { /* cross-origin */ }
-
     if (!tryInit()) {
       const interval = setInterval(() => {
         if (tryInit()) clearInterval(interval);
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const w = window as any;
-        const wfKeys = Object.keys(w).filter(k => k.toLowerCase().includes("webflow") || k.toLowerCase().includes("wf"));
-        if (wfKeys.length) addDebug("window keys: " + wfKeys.join(", "));
       }, 500);
       const timeout = setTimeout(() => {
         clearInterval(interval);
-        setSdkMsg("Could not connect to Webflow Designer SDK.");
-        // Show debug info about window
+        setSdkMsg("SDK not connected. See debug below.");
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const w = window as any;
         const wfKeys = Object.keys(w).filter(k => k.toLowerCase().includes("webflow") || k.toLowerCase().includes("wf") || k === "designer");
-        addDebug("Final window wf-keys: " + (wfKeys.join(", ") || "none"));
-        addDebug("parent === window: " + (window.parent === window));
+        addDebug("window wf-keys: " + (wfKeys.join(", ") || "none"));
+        addDebug("in iframe: " + (window.parent !== window));
         setShowDebug(true);
       }, 8000);
       return () => { clearInterval(interval); clearTimeout(timeout); };
