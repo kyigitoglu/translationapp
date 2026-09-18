@@ -11,22 +11,26 @@ export async function GET(req: NextRequest) {
   }
 
   // Exchange code for access token
+  const tokenBody = {
+    client_id: process.env.WEBFLOW_CLIENT_ID,
+    client_secret: process.env.WEBFLOW_CLIENT_SECRET,
+    code,
+    grant_type: "authorization_code",
+    redirect_uri: `${process.env.NEXTAUTH_URL}/api/auth/callback`,
+  };
+
+  console.log("[oauth] exchanging code, redirect_uri:", tokenBody.redirect_uri);
+
   const tokenRes = await fetch("https://api.webflow.com/oauth/access_token", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      client_id: process.env.WEBFLOW_CLIENT_ID,
-      client_secret: process.env.WEBFLOW_CLIENT_SECRET,
-      code,
-      grant_type: "authorization_code",
-      redirect_uri: `${process.env.NEXTAUTH_URL}/api/auth/callback`,
-    }),
+    body: JSON.stringify(tokenBody),
   });
 
   if (!tokenRes.ok) {
     const err = await tokenRes.text();
-    console.error("[oauth] token exchange failed:", err);
-    return NextResponse.redirect(new URL("/install?error=token_exchange_failed", req.url));
+    console.error("[oauth] token exchange failed:", tokenRes.status, err);
+    return NextResponse.redirect(new URL(`/install?error=token_exchange_failed&detail=${encodeURIComponent(err)}`, req.url));
   }
 
   const { access_token } = await tokenRes.json();
