@@ -9,7 +9,7 @@ export async function GET(req: NextRequest) {
   const token = await getWfToken();
   if (!token) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
 
-  const res = await fetch(`https://api.webflow.com/v2/sites/${siteId}/locales`, {
+  const res = await fetch(`https://api.webflow.com/v2/sites/${siteId}/collections`, {
     headers: { Authorization: `Bearer ${token}` },
   });
 
