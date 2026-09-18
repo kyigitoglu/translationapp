@@ -42,26 +42,66 @@ export default function PanelPage() {
   const [error, setError] = useState("");
   const [scanDone, setScanDone] = useState(false);
 
+  const [debugMsgs, setDebugMsgs] = useState<string[]>([]);
+  const [showDebug, setShowDebug] = useState(false);
+
+  const addDebug = (msg: string) => setDebugMsgs((p) => [...p.slice(-19), msg]);
+
   // Init SDK
+  useEffect(() => {
+    // Listen for ALL postMessages from parent (Webflow Designer)
+    const onMessage = (ev: MessageEvent) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const w = window as any;
+      addDebug(`MSG origin=${ev.origin} type=${typeof ev.data === "object" ? JSON.stringify(ev.data)?.slice(0, 80) : String(ev.data).slice(0, 80)}`);
+      // If Webflow sends the sdk object via message, capture it
+      if (ev.data && typeof ev.data === "object" && ev.data.webflow) {
+        w.webflow = ev.data.webflow;
+      }
+    };
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, []);
+
   useEffect(() => {
     const tryInit = (): boolean => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const w = window as any;
-      const sdk = w.webflow ?? w._webflow ?? null;
-      if (sdk) {
+      const sdk = w.webflow ?? w._webflow ?? w.__webflow ?? null;
+      if (sdk && typeof sdk === "object") {
         setWf(sdk);
         setSdkReady(true);
         setSdkMsg("");
+        addDebug("SDK found: " + Object.keys(sdk).slice(0, 5).join(", "));
         return true;
       }
       return false;
     };
 
+    // Announce to parent that extension is ready (some bridges require this)
+    try {
+      window.parent?.postMessage({ type: "webflow:extension:ready" }, "*");
+      window.parent?.postMessage({ type: "extensionReady" }, "*");
+    } catch { /* cross-origin */ }
+
     if (!tryInit()) {
-      const interval = setInterval(() => { if (tryInit()) clearInterval(interval); }, 300);
+      const interval = setInterval(() => {
+        if (tryInit()) clearInterval(interval);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const w = window as any;
+        const wfKeys = Object.keys(w).filter(k => k.toLowerCase().includes("webflow") || k.toLowerCase().includes("wf"));
+        if (wfKeys.length) addDebug("window keys: " + wfKeys.join(", "));
+      }, 500);
       const timeout = setTimeout(() => {
         clearInterval(interval);
         setSdkMsg("Could not connect to Webflow Designer SDK.");
+        // Show debug info about window
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const w = window as any;
+        const wfKeys = Object.keys(w).filter(k => k.toLowerCase().includes("webflow") || k.toLowerCase().includes("wf") || k === "designer");
+        addDebug("Final window wf-keys: " + (wfKeys.join(", ") || "none"));
+        addDebug("parent === window: " + (window.parent === window));
+        setShowDebug(true);
       }, 8000);
       return () => { clearInterval(interval); clearTimeout(timeout); };
     }
@@ -207,6 +247,14 @@ export default function PanelPage() {
         {!sdkReady && (
           <div className="bg-yellow-900/30 border border-yellow-700/40 rounded px-3 py-2 text-xs text-yellow-300">
             {sdkMsg || "Connecting…"}
+            <button onClick={() => setShowDebug((v) => !v)} className="ml-2 underline opacity-60">debug</button>
+          </div>
+        )}
+
+        {/* Debug panel */}
+        {showDebug && (
+          <div className="bg-[#111] border border-white/10 rounded px-2 py-2 text-[10px] font-mono text-[#666] space-y-0.5 max-h-48 overflow-auto">
+            {debugMsgs.length === 0 ? <div>No messages received</div> : debugMsgs.map((m, i) => <div key={i}>{m}</div>)}
           </div>
         )}
 
