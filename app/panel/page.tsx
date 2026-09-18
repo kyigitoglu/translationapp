@@ -1,375 +1,301 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 
-interface Site { id: string; displayName: string; }
-interface Locale { id: string; cmsLocaleId: string; displayName: string; tag: string; primary: boolean; }
-interface Collection { id: string; displayName: string; slug: string; }
-interface CmsField { id: string; slug: string; displayName: string; type: string; }
-interface CmsItem { id: string; fieldData: Record<string, string>; }
+type Status = "idle" | "scanning" | "translating-one" | "translating-all" | "error";
 
-type Step = "auth" | "site" | "locale" | "collection" | "items" | "translating" | "done" | "error";
-
-const TEXT_FIELD_TYPES = ["PlainText", "RichText"];
-
-function Label({ children }: { children: React.ReactNode }) {
-  return <p className="text-[10px] uppercase tracking-widest text-[#666] mb-1">{children}</p>;
+interface TextNode {
+  id: string;
+  tag: string;
+  text: string;
+  translating?: boolean;
+  translated?: string;
 }
 
-function Select({ value, onChange, children, disabled }: {
-  value: string; onChange: (v: string) => void; children: React.ReactNode; disabled?: boolean;
-}) {
-  return (
-    <select
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-      disabled={disabled}
-      className="w-full bg-[#2a2a2a] border border-white/10 rounded px-2 py-1.5 text-white text-sm focus:outline-none focus:border-[#0073e6] disabled:opacity-50"
-    >
-      {children}
-    </select>
-  );
-}
+const TARGET_TAGS = ["h1","h2","h3","h4","h5","h6","p","a","span","button","label"];
 
-function Btn({ onClick, disabled, children, variant = "secondary" }: {
-  onClick: () => void; disabled?: boolean; children: React.ReactNode; variant?: "primary" | "secondary";
-}) {
-  return (
-    <button
-      onClick={onClick}
-      disabled={disabled}
-      className={`w-full rounded px-3 py-2 text-sm font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
-        variant === "primary"
-          ? "bg-[#0073e6] hover:bg-[#0066cc] text-white"
-          : "bg-[#2a2a2a] hover:bg-[#333] border border-white/10 text-white"
-      }`}
-    >
-      {children}
-    </button>
-  );
-}
+const LANGUAGES = [
+  { label: "Turkish", value: "Turkish" },
+  { label: "German", value: "German" },
+  { label: "French", value: "French" },
+  { label: "Spanish", value: "Spanish" },
+  { label: "Italian", value: "Italian" },
+  { label: "Dutch", value: "Dutch" },
+  { label: "Portuguese", value: "Portuguese" },
+  { label: "Arabic", value: "Arabic" },
+  { label: "Japanese", value: "Japanese" },
+  { label: "Chinese", value: "Chinese (Simplified)" },
+];
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type WF = any;
 
 export default function PanelPage() {
-  const [step, setStep] = useState<Step>("auth");
+  const [wf, setWf] = useState<WF>(null);
+  const [sdkReady, setSdkReady] = useState(false);
+  const [sdkMsg, setSdkMsg] = useState("Connecting to Webflow Designer…");
+
+  const [language, setLanguage] = useState("Turkish");
+  const [selected, setSelected] = useState<TextNode | null>(null);
+  const [nodes, setNodes] = useState<TextNode[]>([]);
+  const [status, setStatus] = useState<Status>("idle");
   const [error, setError] = useState("");
+  const [scanDone, setScanDone] = useState(false);
 
-  const [sites, setSites] = useState<Site[]>([]);
-  const [selectedSite, setSelectedSite] = useState("");
-
-  const [locales, setLocales] = useState<Locale[]>([]);
-  const [selectedLocale, setSelectedLocale] = useState<Locale | null>(null);
-
-  const [collections, setCollections] = useState<Collection[]>([]);
-  const [selectedCollection, setSelectedCollection] = useState("");
-
-  const [fields, setFields] = useState<CmsField[]>([]);
-  const [items, setItems] = useState<CmsItem[]>([]);
-  const [selectedFields, setSelectedFields] = useState<string[]>([]);
-
-  const [progress, setProgress] = useState({ done: 0, total: 0 });
-
-  const apiFetch = async (url: string, opts?: RequestInit) => {
-    const res = await fetch(url, { credentials: "include", ...opts });
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
-      throw new Error(data.error ?? `HTTP ${res.status}`);
-    }
-    return res.json();
-  };
-
-  // 1. Check auth
+  // Init SDK
   useEffect(() => {
-    apiFetch("/api/auth/status")
-      .then((d) => {
-        if (d.authenticated) loadSites();
-        else setStep("auth");
-      })
-      .catch(() => setStep("auth"));
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    const tryInit = (): boolean => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const w = window as any;
+      const sdk = w.webflow ?? w._webflow ?? null;
+      if (sdk) {
+        setWf(sdk);
+        setSdkReady(true);
+        setSdkMsg("");
+        return true;
+      }
+      return false;
+    };
+
+    if (!tryInit()) {
+      const interval = setInterval(() => { if (tryInit()) clearInterval(interval); }, 300);
+      const timeout = setTimeout(() => {
+        clearInterval(interval);
+        setSdkMsg("Could not connect to Webflow Designer SDK.");
+      }, 8000);
+      return () => { clearInterval(interval); clearTimeout(timeout); };
+    }
   }, []);
 
-  const loadSites = async () => {
-    try {
-      const data = await apiFetch("/api/sites");
-      const list: Site[] = data.sites ?? [];
-      setSites(list);
-      if (list.length === 1) {
-        setSelectedSite(list[0].id);
-        loadLocales(list[0].id);
-      } else {
-        setStep("site");
-      }
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to load sites");
-      setStep("error");
-    }
-  };
+  // Subscribe to selected element
+  useEffect(() => {
+    if (!wf || !sdkReady) return;
 
-  const loadLocales = async (siteId: string) => {
-    try {
-      const data = await apiFetch(`/api/locales?siteId=${siteId}`);
-      const secondary = (data.secondaryLocales ?? []) as Locale[];
-      setLocales(secondary);
-      setStep("locale");
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to load locales");
-      setStep("error");
-    }
-  };
+    let unsub: (() => void) | null = null;
 
-  const loadCollections = async (siteId: string) => {
-    try {
-      const data = await apiFetch(`/api/collections?siteId=${siteId}`);
-      setCollections(data.collections ?? []);
-      setStep("collection");
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to load collections");
-      setStep("error");
-    }
-  };
-
-  const loadItems = async () => {
-    if (!selectedCollection || !selectedLocale) return;
-    try {
-      const data = await apiFetch(
-        `/api/items?collectionId=${selectedCollection}&cmsLocaleId=${selectedLocale.cmsLocaleId}`
-      );
-      const itemList: CmsItem[] = data.items ?? [];
-      setItems(itemList);
-
-      // Detect text fields from first item
-      if (itemList.length > 0) {
-        const firstFields = Object.entries(itemList[0].fieldData)
-          .filter(([, v]) => typeof v === "string" && v.length > 0)
-          .map(([k]) => k)
-          .filter((k) => !["slug", "name", "_archived", "_draft"].includes(k));
-        setSelectedFields(firstFields.slice(0, 3));
-
-        const col = collections.find((c) => c.id === selectedCollection);
-        setFields(firstFields.map((k) => ({ id: k, slug: k, displayName: k, type: "PlainText" })));
-        void col;
-      }
-
-      setStep("items");
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to load items");
-      setStep("error");
-    }
-  };
-
-  const handleTranslate = async () => {
-    if (!selectedLocale || !selectedCollection || items.length === 0 || selectedFields.length === 0) return;
-    setStep("translating");
-    setProgress({ done: 0, total: items.length });
-    setError("");
-
-    try {
-      const translatedItems = [];
-
-      for (let i = 0; i < items.length; i++) {
-        const item = items[i];
-        const textsToTranslate = selectedFields
-          .map((f) => item.fieldData[f])
-          .filter(Boolean);
-
-        if (textsToTranslate.length === 0) {
-          setProgress({ done: i + 1, total: items.length });
-          continue;
+    const subscribe = async () => {
+      try {
+        if (typeof wf.subscribe === "function") {
+          unsub = wf.subscribe("currentElement", async (el: WF) => {
+            if (!el) { setSelected(null); return; }
+            const tag = await el.getTag?.();
+            if (!TARGET_TAGS.includes(tag ?? "")) { setSelected(null); return; }
+            const text = await el.getTextContent?.();
+            if (!text?.trim()) { setSelected(null); return; }
+            setSelected({ id: el.id, tag: tag ?? "?", text: text.trim() });
+          });
+        } else if (typeof wf.subscribeToCurrentElement === "function") {
+          unsub = wf.subscribeToCurrentElement(async (el: WF) => {
+            if (!el) { setSelected(null); return; }
+            const tag = await el.getTag?.();
+            if (!TARGET_TAGS.includes(tag ?? "")) { setSelected(null); return; }
+            const text = await el.getTextContent?.();
+            if (!text?.trim()) { setSelected(null); return; }
+            setSelected({ id: el.id, tag: tag ?? "?", text: text.trim() });
+          });
         }
+      } catch { /* ignore */ }
+    };
 
-        const res = await apiFetch("/api/translate", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            texts: textsToTranslate,
-            targetLanguage: selectedLocale.displayName,
-          }),
-        });
+    subscribe();
+    return () => { unsub?.(); };
+  }, [wf, sdkReady]);
 
-        const translations: string[] = res.translations;
-        const fieldData: Record<string, string> = {};
-        selectedFields.forEach((f, idx) => {
-          if (translations[idx]) fieldData[f] = translations[idx];
-        });
+  const callTranslate = async (texts: string[]): Promise<string[]> => {
+    const res = await fetch("/api/translate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ texts, targetLanguage: language }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error ?? "Translation failed");
+    return data.translations as string[];
+  };
 
-        translatedItems.push({ itemId: item.id, fieldData });
-        setProgress({ done: i + 1, total: items.length });
+  const applyToElement = async (elementId: string, text: string) => {
+    const all = await wf.getAllElements();
+    const el = all.find((e: WF) => e.id === elementId);
+    if (el) await el.setTextContent?.(text);
+  };
+
+  // Translate selected element
+  const translateSelected = async () => {
+    if (!selected || !wf) return;
+    setStatus("translating-one");
+    setError("");
+    try {
+      const [translated] = await callTranslate([selected.text]);
+      await applyToElement(selected.id, translated);
+      setSelected((s) => s ? { ...s, text: translated } : null);
+      setStatus("idle");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed");
+      setStatus("error");
+    }
+  };
+
+  // Scan all page elements
+  const scan = useCallback(async () => {
+    if (!wf) return;
+    setStatus("scanning");
+    setError("");
+    setScanDone(false);
+    try {
+      const all = await wf.getAllElements();
+      const found: TextNode[] = [];
+      for (const el of all) {
+        const tag = await el.getTag?.();
+        if (!TARGET_TAGS.includes(tag ?? "")) continue;
+        const text = await el.getTextContent?.();
+        if (!text?.trim()) continue;
+        found.push({ id: el.id, tag: tag ?? "?", text: text.trim() });
       }
+      setNodes(found);
+      setScanDone(true);
+      setStatus("idle");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Scan failed");
+      setStatus("error");
+    }
+  }, [wf]);
 
-      await apiFetch("/api/apply", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          collectionId: selectedCollection,
-          cmsLocaleId: selectedLocale.cmsLocaleId,
-          items: translatedItems,
-        }),
-      });
+  // Translate single node from list
+  const translateNode = async (index: number) => {
+    setNodes((prev) => prev.map((n, i) => i === index ? { ...n, translating: true } : n));
+    try {
+      const [translated] = await callTranslate([nodes[index].text]);
+      await applyToElement(nodes[index].id, translated);
+      setNodes((prev) => prev.map((n, i) => i === index ? { ...n, text: translated, translated, translating: false } : n));
+    } catch {
+      setNodes((prev) => prev.map((n, i) => i === index ? { ...n, translating: false } : n));
+    }
+  };
 
-      setStep("done");
+  // Translate all nodes
+  const translateAll = async () => {
+    if (!wf || nodes.length === 0) return;
+    setStatus("translating-all");
+    setError("");
+    try {
+      const texts = nodes.map((n) => n.text);
+      const translations = await callTranslate(texts);
+      for (let i = 0; i < nodes.length; i++) {
+        await applyToElement(nodes[i].id, translations[i]);
+        setNodes((prev) => prev.map((n, idx) => idx === i ? { ...n, text: translations[i], translated: translations[i] } : n));
+      }
+      setStatus("idle");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Translation failed");
-      setStep("error");
+      setStatus("error");
     }
   };
 
-  const toggleField = (slug: string) => {
-    setSelectedFields((prev) =>
-      prev.includes(slug) ? prev.filter((f) => f !== slug) : [...prev, slug]
-    );
-  };
+  const busy = status === "scanning" || status === "translating-one" || status === "translating-all";
 
   return (
-    <div className="flex flex-col h-screen bg-[#1a1a1a] text-[#e8e8e8] font-sans text-sm">
+    <div className="flex flex-col h-screen bg-[#1a1a1a] text-[#e8e8e8] text-sm font-sans">
       {/* Header */}
       <div className="flex items-center gap-2 px-4 py-3 border-b border-white/10 shrink-0">
-        <span className="text-base">🌐</span>
+        <span>🌐</span>
         <span className="font-semibold text-white">Auto Translate</span>
       </div>
 
       <div className="flex flex-col gap-4 p-4 flex-1 overflow-auto">
 
-        {/* Not authenticated */}
-        {step === "auth" && (
-          <div className="flex flex-col gap-3">
-            <p className="text-xs text-[#999]">Connect your Webflow account to get started.</p>
-            <a
-              href={`${process.env.NEXT_PUBLIC_APP_URL ?? "https://translationapp-ivory.vercel.app"}/install`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="block w-full text-center bg-[#0073e6] hover:bg-[#0066cc] rounded px-3 py-2 text-sm font-medium text-white transition-colors"
+        {/* SDK not ready */}
+        {!sdkReady && (
+          <div className="bg-yellow-900/30 border border-yellow-700/40 rounded px-3 py-2 text-xs text-yellow-300">
+            {sdkMsg || "Connecting…"}
+          </div>
+        )}
+
+        {/* Language */}
+        <div>
+          <p className="text-[10px] uppercase tracking-widest text-[#666] mb-1">Target Language</p>
+          <select
+            value={language}
+            onChange={(e) => setLanguage(e.target.value)}
+            className="w-full bg-[#2a2a2a] border border-white/10 rounded px-2 py-1.5 text-white text-sm focus:outline-none focus:border-[#0073e6]"
+          >
+            {LANGUAGES.map((l) => (
+              <option key={l.value} value={l.value}>{l.label}</option>
+            ))}
+          </select>
+        </div>
+
+        {/* Selected element */}
+        {selected && (
+          <div className="flex flex-col gap-2">
+            <p className="text-[10px] uppercase tracking-widest text-[#666]">Selected Element</p>
+            <div className="bg-[#242424] rounded px-3 py-2 flex flex-col gap-1">
+              <span className="text-[#0073e6] font-mono text-xs">{`<${selected.tag}>`}</span>
+              <span className="text-[#ccc] text-xs leading-relaxed line-clamp-2">{selected.text}</span>
+            </div>
+            <button
+              onClick={translateSelected}
+              disabled={busy}
+              className="w-full bg-[#0073e6] hover:bg-[#0066cc] rounded px-3 py-2 text-sm text-white font-medium transition-colors disabled:opacity-40"
             >
-              Connect with Webflow →
-            </a>
+              {status === "translating-one" ? "Translating…" : `Translate to ${language}`}
+            </button>
           </div>
         )}
 
-        {/* Site selector */}
-        {step === "site" && (
-          <div className="flex flex-col gap-3">
-            <div>
-              <Label>Site</Label>
-              <Select value={selectedSite} onChange={setSelectedSite}>
-                <option value="">Select a site…</option>
-                {sites.map((s) => <option key={s.id} value={s.id}>{s.displayName}</option>)}
-              </Select>
+        {/* Divider */}
+        {selected && <div className="border-t border-white/10" />}
+
+        {/* Scan all */}
+        <button
+          onClick={scan}
+          disabled={busy || !sdkReady}
+          className="w-full bg-[#2a2a2a] hover:bg-[#333] border border-white/10 rounded px-3 py-2 text-sm text-white transition-colors disabled:opacity-40"
+        >
+          {status === "scanning" ? "Scanning…" : "Scan All Page Elements"}
+        </button>
+
+        {/* Scanned nodes list */}
+        {scanDone && nodes.length > 0 && (
+          <div className="flex flex-col gap-2">
+            <div className="flex items-center justify-between">
+              <p className="text-[10px] uppercase tracking-widest text-[#666]">{nodes.length} elements</p>
             </div>
-            <Btn
-              variant="primary"
-              onClick={() => { loadLocales(selectedSite); }}
-              disabled={!selectedSite}
+            <div className="flex flex-col gap-1 max-h-48 overflow-auto">
+              {nodes.map((n, i) => (
+                <div key={i} className="flex items-center gap-2 bg-[#242424] rounded px-2 py-1.5">
+                  <span className="text-[#0073e6] font-mono text-[10px] shrink-0">{`<${n.tag}>`}</span>
+                  <span className={`text-xs flex-1 truncate ${n.translated ? "text-green-400" : "text-[#aaa]"}`}>
+                    {n.text}
+                  </span>
+                  <button
+                    onClick={() => translateNode(i)}
+                    disabled={busy || n.translating}
+                    className="shrink-0 text-[10px] text-[#0073e6] hover:text-white disabled:opacity-40 transition-colors"
+                  >
+                    {n.translating ? "…" : "↻"}
+                  </button>
+                </div>
+              ))}
+            </div>
+
+            <button
+              onClick={translateAll}
+              disabled={busy}
+              className="w-full bg-[#0073e6] hover:bg-[#0066cc] rounded px-3 py-2 text-sm text-white font-medium transition-colors disabled:opacity-40"
             >
-              Continue
-            </Btn>
+              {status === "translating-all" ? "Translating…" : `Translate All to ${language}`}
+            </button>
           </div>
         )}
 
-        {/* Locale + Collection */}
-        {(step === "locale" || step === "collection" || step === "items") && (
-          <div className="flex flex-col gap-3">
-            <div>
-              <Label>Target Language</Label>
-              <Select
-                value={selectedLocale?.id ?? ""}
-                onChange={(v) => setSelectedLocale(locales.find((l) => l.id === v) ?? null)}
-              >
-                <option value="">Select locale…</option>
-                {locales.map((l) => (
-                  <option key={l.id} value={l.id}>{l.displayName} ({l.tag})</option>
-                ))}
-              </Select>
-            </div>
-
-            {step === "locale" && (
-              <Btn
-                variant="primary"
-                onClick={() => loadCollections(selectedSite)}
-                disabled={!selectedLocale}
-              >
-                Load Collections
-              </Btn>
-            )}
-
-            {(step === "collection" || step === "items") && (
-              <>
-                <div>
-                  <Label>Collection</Label>
-                  <Select value={selectedCollection} onChange={setSelectedCollection}>
-                    <option value="">Select collection…</option>
-                    {collections.map((c) => (
-                      <option key={c.id} value={c.id}>{c.displayName}</option>
-                    ))}
-                  </Select>
-                </div>
-                <Btn onClick={loadItems} disabled={!selectedCollection || !selectedLocale}>
-                  Load Items
-                </Btn>
-              </>
-            )}
-
-            {step === "items" && fields.length > 0 && (
-              <>
-                <div>
-                  <Label>Fields to translate</Label>
-                  <div className="flex flex-col gap-1">
-                    {fields.map((f) => (
-                      <label key={f.slug} className="flex items-center gap-2 cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={selectedFields.includes(f.slug)}
-                          onChange={() => toggleField(f.slug)}
-                          className="accent-[#0073e6]"
-                        />
-                        <span className="text-xs text-[#ccc]">{f.displayName}</span>
-                      </label>
-                    ))}
-                  </div>
-                </div>
-                <div className="text-xs text-[#666]">{items.length} items found</div>
-                <Btn
-                  variant="primary"
-                  onClick={handleTranslate}
-                  disabled={selectedFields.length === 0}
-                >
-                  Translate {items.length} items → {selectedLocale?.displayName}
-                </Btn>
-              </>
-            )}
-          </div>
-        )}
-
-        {/* Translating */}
-        {step === "translating" && (
-          <div className="flex flex-col gap-3">
-            <div className="text-xs text-[#999]">
-              Translating {progress.done} / {progress.total} items…
-            </div>
-            <div className="w-full bg-[#2a2a2a] rounded-full h-1.5">
-              <div
-                className="bg-[#0073e6] h-1.5 rounded-full transition-all"
-                style={{ width: `${progress.total > 0 ? (progress.done / progress.total) * 100 : 0}%` }}
-              />
-            </div>
-          </div>
-        )}
-
-        {/* Done */}
-        {step === "done" && (
-          <div className="flex flex-col gap-3">
-            <div className="bg-green-900/30 border border-green-700/40 rounded px-3 py-2 text-xs text-green-400">
-              ✓ {progress.total} items translated to {selectedLocale?.displayName}
-            </div>
-            <Btn onClick={() => setStep("items")}>Translate Again</Btn>
-          </div>
+        {scanDone && nodes.length === 0 && (
+          <p className="text-xs text-[#555]">No text elements found on this page.</p>
         )}
 
         {/* Error */}
-        {step === "error" && (
-          <div className="flex flex-col gap-3">
-            <div className="bg-red-900/30 border border-red-700/40 rounded px-3 py-2 text-xs text-red-400">
-              {error}
-            </div>
-            <Btn onClick={() => { setStep("auth"); setError(""); }}>Retry</Btn>
+        {status === "error" && error && (
+          <div className="bg-red-900/30 border border-red-700/40 rounded px-3 py-2 text-xs text-red-400">
+            {error}
           </div>
         )}
       </div>
